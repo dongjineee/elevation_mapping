@@ -21,7 +21,7 @@ def callback(newPose):
     # Create and fill pose message for publishing
     pose = geometry_msgs.msg.PoseWithCovarianceStamped()
     pose.header.stamp = rospy.Time(0)
-    pose.header.frame_id = from_frame
+    pose.header.frame_id = "odom"
     pose.pose.pose.position.x = trans[0]
     pose.pose.pose.position.y = trans[1]
     pose.pose.pose.position.z = trans[2]

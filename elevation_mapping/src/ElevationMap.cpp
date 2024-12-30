@@ -36,7 +36,8 @@ namespace elevation_mapping {
 ElevationMap::ElevationMap(ros::NodeHandle nodeHandle)
     : nodeHandle_(nodeHandle),
       rawMap_({"elevation", "variance", "horizontal_variance_x", "horizontal_variance_y", "horizontal_variance_xy", "color", "time",
-               "dynamic_time", "lowest_scan_point", "sensor_x_at_lowest_scan", "sensor_y_at_lowest_scan", "sensor_z_at_lowest_scan"}),
+               "dynamic_time", "lowest_scan_point", "sensor_x_at_lowest_scan", "sensor_y_at_lowest_scan", "sensor_z_at_lowest_scan",
+               "slope", "roughness", "height_diff", "Traversability"}),
       fusedMap_({"elevation", "upper_bound", "lower_bound", "color"}),
       postprocessorPool_(nodeHandle.param("postprocessor_num_threads", 1), nodeHandle_),
       hasUnderlyingMap_(false) {
@@ -64,6 +65,8 @@ void ElevationMap::setGeometry(const grid_map::Length& length, const double& res
   fusedMap_.setGeometry(length, resolution, position);
   ROS_INFO_STREAM("Elevation map grid resized to " << rawMap_.getSize()(0) << " rows and " << rawMap_.getSize()(1) << " columns.");
 }
+
+////// hear create elevation
 bool ElevationMap::add(const PointCloudType::Ptr pointCloud, Eigen::VectorXf& pointCloudVariances, const ros::Time& timestamp,
                        const Eigen::Affine3d& transformationSensorToMap) {
   const Parameters parameters{parameters_.getData()};
@@ -98,6 +101,10 @@ bool ElevationMap::add(const PointCloudType::Ptr pointCloud, Eigen::VectorXf& po
   auto& sensorXatLowestScanLayer = rawMap_["sensor_x_at_lowest_scan"];
   auto& sensorYatLowestScanLayer = rawMap_["sensor_y_at_lowest_scan"];
   auto& sensorZatLowestScanLayer = rawMap_["sensor_z_at_lowest_scan"];
+  auto& slope_layer = rawMap_["slope"];
+  auto& roughness_layer = rawMap_["roughness"];
+  auto& height_diff_layer = rawMap_["height_diff"];
+  auto& Travel_layer = rawMap_["Traversability"];
 
   std::vector<Eigen::Ref<const grid_map::Matrix>> basicLayers_;
   for (const std::string& layer : rawMap_.getBasicLayers()) {
@@ -181,6 +188,118 @@ bool ElevationMap::add(const PointCloudType::Ptr pointCloud, Eigen::VectorXf& po
     horizontalVarianceX = parameters.minHorizontalVariance_;
     horizontalVarianceY = parameters.minHorizontalVariance_;
     horizontalVarianceXY = 0.0;
+  }
+
+//Compute slope, roughness, height diff
+  for (unsigned int i = 0; i < pointCloud->size(); ++i) {
+    auto& point = pointCloud->points[i];
+    grid_map::Index index;
+    grid_map::Position current_position(point.x, point.y);
+
+    if (!rawMap_.getIndex(current_position, index)) {
+        continue; 
+    }
+
+    auto& slope = slope_layer(index(0), index(1));
+    auto& roughness = roughness_layer(index(0), index(1));
+    auto& height_diff = height_diff_layer(index(0), index(1));
+    auto& Traversability = Travel_layer(index(0), index(1));
+
+    // 1. Neighbors
+    std::vector<grid_map::Index> neighbors;
+
+    // 5x5 window
+    for (int dx = -2; dx <= 2; ++dx) {
+        for (int dy = -2; dy <= 2; ++dy) {
+            if (dx == 0 && dy == 0) continue;
+
+            grid_map::Index neighborIndex(index(0) + dx, index(1) + dy);
+
+            if (!rawMap_.isValid(neighborIndex)) continue;
+
+            grid_map::Position neighbors_position;
+            if(!rawMap_.getPosition(neighborIndex, neighbors_position)) continue;
+  
+            float maxDistance = 1.0f;
+
+            if ((current_position - neighbors_position).norm() >= maxDistance) continue;
+
+            neighbors.push_back(neighborIndex);
+        }
+    }
+
+    ///compute normal_vector
+    float current_elevation = rawMap_.at("elevation", index);
+    Eigen::Vector3f current_points(current_position.x(), current_position.y(), current_elevation);
+    
+    std::vector<Eigen::Vector3f> neighbors_points;
+    for(int size = 0; size < neighbors.size(); size ++)
+    {
+      grid_map::Index neighbors_index = neighbors[size];
+      float elevation = rawMap_.at("elevation", neighbors_index);
+
+      grid_map::Position neighbors_position;
+      rawMap_.getPosition(neighbors_index, neighbors_position);
+
+      neighbors_points.emplace_back(neighbors_position.x(),neighbors_position.y(),elevation);
+    }
+
+    Eigen::Vector3f mean_points = Eigen::Vector3f::Zero();
+    if (neighbors_points.empty()) continue;
+    for(const auto& point : neighbors_points) mean_points += point;
+    mean_points /= neighbors_points.size();
+    
+    Eigen::MatrixXf centered(neighbors_points.size(), 3);
+    for (size_t i = 0; i < neighbors_points.size(); ++i) {
+        centered.row(i) = neighbors_points[i] - mean_points;
+    }
+
+    Eigen::Matrix3f covariance = (centered.transpose() * centered) / static_cast<float>(neighbors_points.size());
+
+    //PCA
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(covariance);
+    Eigen::Vector3f normal_vector = solver.eigenvectors().col(0); 
+    normal_vector.normalize();
+
+    Eigen::Vector3f unit_z(0,0,1);
+    // slope = std::cos(normal_vector.dot(unit_z)); //cos으로 해야 0~1로 MAPPING 됨
+
+    //**compute slope**//
+    float dot_product = std::abs(normal_vector.dot(unit_z));
+    // float angle_rad = acos(std::max(-1.0f, std::min(1.0f, dot_product))); //output :: radian
+    float angle_rad = acos(dot_product);
+    float angle_deg = angle_rad * 180.0f / M_PI; //output :: degree
+    int s_crit = 30; //30 radian
+    float slope_grid = std::min(1.0f ,angle_deg/s_crit);
+    
+    slope = slope_grid;
+    // std::cout << dot_product << " " << angle_rad << " " << slope << std::endl;
+    //**compute roughness**//
+    float r_crit = 0.03; //5cm
+    float roughness_scalar = 0.0f;
+    for(const auto& neighbor_point : neighbors_points){
+      roughness_scalar += std::abs(current_points[2] - neighbor_point[2]);
+    }
+
+    roughness_scalar /= neighbors_points.size();
+    float roughness_grid = std::min(1.0f ,roughness_scalar/r_crit);
+    roughness = roughness_grid;
+    // std::cout << roughness_scalar/r_crit << " ";
+
+    //**compute height_diff**//
+    float h_crit = 0.05; //5cm
+    height_diff = 0.0f;
+    float max_neighbor_elevation = current_points[2];
+    for(const auto& neighbor_point : neighbors_points){
+      max_neighbor_elevation = std::max(neighbor_point[2], max_neighbor_elevation);
+    }
+    height_diff = std::min(1.0f, (max_neighbor_elevation - current_points[2])/h_crit);
+
+    float s_weight = 0.5; //slope weight
+    float r_weight = 0.25;
+    float h_weight = 0.25;
+
+    Traversability = s_weight*slope + r_weight*roughness + h_weight*height_diff;
   }
 
   clean();

@@ -6,12 +6,13 @@ robot_pose_cache_size:                      200
 input_sources:
   front: # A name to identify the input source
     type: pointcloud # Supported types: pointcloud
-    topic: /camera/depth/points_downsampled
+    # topic: /camera/depth/points_downsampled
+    topic: /velodyne_points
     queue_size: 1
     publish_on_update: true # Wheter to publish the elevation map after a callback from this source.
     sensor_processor:
       type: perfect
-track_point_frame_id:                       base_footprint
+track_point_frame_id:                       base_link
 track_point_x:                              0.0
 track_point_y:                              0.0
 track_point_z:                              0.0
@@ -44,4 +45,4 @@ length_in_x_init_submap:                    1.6
 length_in_y_init_submap:                    1.6
 init_submap_height_offset:                  0.01
 init_submap_variance:                       0.001
-target_frame_init_submap:                   base_footprint
+target_frame_init_submap:                   base_link

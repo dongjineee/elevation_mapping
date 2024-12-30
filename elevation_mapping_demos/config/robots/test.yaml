@@ -1,17 +1,17 @@
 # Robot.
-map_frame_id:                               odom
-robot_base_frame_id:                        base_link
-robot_pose_with_covariance_topic:           /base_footprint_pose
+map_frame_id:                               camera_init
+robot_base_frame_id:                        body
+robot_pose_with_covariance_topic:           /body_pose
 robot_pose_cache_size:                      200
 input_sources:
   front: # A name to identify the input source
     type: pointcloud # Supported types: pointcloud
-    topic: /camera/depth/points_downsampled
-    queue_size: 1
+    topic: /cloud_registered_body
+    queue_size: 10
     publish_on_update: true # Wheter to publish the elevation map after a callback from this source.
     sensor_processor:
       type: perfect
-track_point_frame_id:                       base_footprint
+track_point_frame_id:                       body
 track_point_x:                              0.0
 track_point_y:                              0.0
 track_point_z:                              0.0
@@ -21,9 +21,9 @@ time_offset_for_point_cloud:                0.0
 sensor_processor/ignore_points_above:       0.4
 robot_motion_map_update/covariance_scale:   0.01
 
-# Map.
-length_in_x:                                6.0
-length_in_y:                                6.0
+# Map. 
+length_in_x:                                200.0
+length_in_y:                                200.0
 position_x:                                 0.0
 position_y:                                 0.0
 resolution:                                 0.1
@@ -44,4 +44,4 @@ length_in_x_init_submap:                    1.6
 length_in_y_init_submap:                    1.6
 init_submap_height_offset:                  0.01
 init_submap_variance:                       0.001
-target_frame_init_submap:                   base_footprint
+target_frame_init_submap:                   body
